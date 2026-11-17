@@ -14,7 +14,7 @@ uv sync --extra anthropic    # optionally add Anthropic
 ```python
 from infact_agents import InFactNode, Settings
 
-# Default: Ollama (INFACT_LLM_MODEL=llama3.1 at http://localhost:11434)
+# Default: Ollama (INFACT_LLM_MODEL=gpt-oss:20b at http://localhost:11434)
 node = InFactNode("The Earth's average temperature has risen since 1900")
 posterior, (lo, hi) = node.process_data("evidence.pdf")
 
@@ -22,6 +22,47 @@ posterior, (lo, hi) = node.process_data("evidence.pdf")
 node = InFactNode("...", settings=Settings(llm_provider="anthropic", llm_model="claude-3-5-sonnet-20241022"))
 
 # Or bring your own backend by subclassing `infact_agents.LLMClient`
+```
+
+## API (FastAPI)
+
+```bash
+uv sync --extra api
+uv run infact-api          # or: uv run uvicorn infact_agents.api.main:app
+```
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/nodes` | create node `{hypothesis, prior_log_odds?, llm_provider?, llm_model?}` |
+| GET | `/nodes`, `/nodes/{id}` | list / full state incl. data points |
+| POST | `/nodes/{id}/data` | multipart upload (`file`), returns updated belief |
+| DELETE | `/nodes/{id}` | remove node |
+| GET | `/health` | liveness |
+
+Env: `INFACT_API_KEY` (if set, send `X-API-Key`), `INFACT_API_HOST`, `INFACT_API_PORT`, `INFACT_MAX_UPLOAD_BYTES`.
+Node state is in memory only.
+
+### Using this repo as a submodule
+
+```bash
+git submodule add <url> libs/infact-agents
+uv add --editable "./libs/infact-agents[api]"
+```
+
+Then either run it as its own service (`uv run infact-api`) and call it over HTTP, or mount it in your FastAPI app:
+
+```python
+from infact_agents.api import create_router
+app.include_router(create_router(), prefix="/infact")
+```
+
+Or skip HTTP entirely: `from infact_agents import InFactNode`.
+
+## Tests
+
+```bash
+uv run pytest -m "not ollama"   # fast, fake LLM
+uv run pytest -m ollama         # real Ollama (INFACT_LLM_MODEL, default gpt-oss:20b); skipped if unavailable
 ```
 
 ## Layout

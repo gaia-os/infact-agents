@@ -20,7 +20,7 @@ def _env(name: str, default: str) -> str:
 class Settings:
     # --- LLM backend -------------------------------------------------------
     llm_provider: str = field(default_factory=lambda: _env("LLM_PROVIDER", "ollama"))
-    llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "llama3.1"))
+    llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "gpt-oss:20b"))
     llm_temperature: float = field(default_factory=lambda: float(_env("LLM_TEMPERATURE", "0.1")))
     llm_max_tokens: int = field(default_factory=lambda: int(_env("LLM_MAX_TOKENS", "8192")))
 
@@ -37,6 +37,15 @@ class Settings:
     max_debug_attempts: int = field(default_factory=lambda: int(_env("MAX_DEBUG_ATTEMPTS", "5")))
     # Guard against overflowing small local-model context windows.
     max_input_chars: int = field(default_factory=lambda: int(_env("MAX_INPUT_CHARS", "60000")))
+
+    # --- API ---------------------------------------------------------------
+    # If set, clients must send it in the X-API-Key header.
+    api_key: str | None = field(default_factory=lambda: os.environ.get("INFACT_API_KEY"))
+    api_host: str = field(default_factory=lambda: _env("API_HOST", "127.0.0.1"))
+    api_port: int = field(default_factory=lambda: int(_env("API_PORT", "8000")))
+    max_upload_bytes: int = field(
+        default_factory=lambda: int(_env("MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+    )
 
     # --- Logging -----------------------------------------------------------
     log_dir: Path = field(default_factory=lambda: Path(_env("LOG_DIR", "logs")))

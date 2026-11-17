@@ -13,7 +13,7 @@ class OllamaClient(LLMClient):
 
     def __init__(
         self,
-        model: str = "llama3.1",
+        model: str = "gpt-oss:20b",
         host: str = "http://localhost:11434",
         temperature: float = 0.1,
         max_tokens: int = 8192,
