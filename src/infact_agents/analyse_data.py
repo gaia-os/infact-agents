@@ -1,0 +1,144 @@
+"""LLM-generated likelihood analysis with a self-debugging execution loop.
+
+WARNING: the generated code is run with ``exec`` in-process and is NOT
+sandboxed. Only use with models/inputs you trust, or run inside a container.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import math
+
+import numpy as np
+import scipy
+
+from .llm import LLMClient
+from .settings import Settings
+from .utils import first_code_block
+
+_PY = ("python", "py", "")
+
+
+def analyse_data(
+    data: dict,
+    hypothesis: str,
+    llm: LLMClient,
+    settings: Settings,
+    logger: logging.Logger,
+) -> tuple[float, float, str]:
+    """Generate and execute analysis code. Returns ``(l_plus, l_minus, code)``."""
+    logger.info("Analyzing parsed data")
+    cap = settings.max_log_likelihood_ratio
+
+    prompt = f"""
+Given this data:
+{json.dumps(data, indent=2)}
+
+Generate Python code to calculate log likelihoods for the hypothesis:
+"{hypothesis}"
+
+This should be a single function named `calculate_log_likelihoods`.
+It should take a single argument, a dict with the format given above,
+and output only the tuple of log-likelihoods
+  l_plus = log P(data | hypothesis),
+  l_minus = log P(data | not hypothesis).
+
+The code should:
+1. Calculate l_plus and l_minus (log likelihoods)
+2. Handle uncertainties properly
+3. Account for data quality and potential biases
+4. Limit overconfidence by capping the absolute difference between l_plus and l_minus to {cap}.
+5. Use the usual libraries such as numpy and scipy for calculations
+6. Use print() to output intermediate results, as well as the final result before returning.
+
+Return only executable Python code in a ```python code block with the function definition.
+Do not include the function call itself.
+"""
+    logger.debug(f"Analysis prompt: {prompt}")
+    response = llm.generate(prompt)
+    logger.debug(f"LLM response: {response}")
+
+    code = first_code_block(response, _PY)
+    if not code:
+        logger.error("No Python code block found in LLM response")
+        raise ValueError("LLM response did not contain a Python code block")
+
+    return execute_code_with_debug(code, data, llm, settings, logger)
+
+
+def _clamp(l_plus: float, l_minus: float, cap: float) -> tuple[float, float]:
+    """Enforce |l_plus - l_minus| <= cap, preserving the midpoint."""
+    diff = l_plus - l_minus
+    if abs(diff) <= cap:
+        return l_plus, l_minus
+    mid = (l_plus + l_minus) / 2
+    half = math.copysign(cap, diff) / 2
+    return mid + half, mid - half
+
+
+def execute_code_with_debug(
+    code: str,
+    data: dict,
+    llm: LLMClient,
+    settings: Settings,
+    logger: logging.Logger,
+) -> tuple[float, float, str]:
+    """Run ``calculate_log_likelihoods``; on failure ask the LLM to fix it."""
+    max_attempts = settings.max_debug_attempts
+
+    for attempt in range(1, max_attempts + 1):
+        logger.info(f"Code execution attempt {attempt}/{max_attempts}")
+        logger.debug(f"Executing code:\n{code}")
+
+        namespace = {"np": np, "numpy": np, "math": math, "scipy": scipy}
+        try:
+            exec(code, namespace)
+            l_plus, l_minus = namespace["calculate_log_likelihoods"](data)
+
+            if not all(isinstance(v, (int, float, np.number)) for v in (l_plus, l_minus)):
+                raise ValueError("l_plus and l_minus must be numeric values")
+            if not (math.isfinite(l_plus) and math.isfinite(l_minus)):
+                raise ValueError("l_plus and l_minus must be finite")
+
+            l_plus, l_minus = _clamp(float(l_plus), float(l_minus), settings.max_log_likelihood_ratio)
+            logger.info(f"Code execution successful - l_plus: {l_plus}, l_minus: {l_minus}")
+            return l_plus, l_minus, code
+
+        except Exception as e:
+            logger.warning(f"Code execution failed on attempt {attempt}: {e}")
+            if attempt == max_attempts:
+                raise RuntimeError(
+                    f"Failed to generate working code after {max_attempts} attempts. "
+                    f"Final error: {e}"
+                ) from e
+
+            debug_prompt = f"""
+The following code failed with error: {e}
+
+Code:
+```python
+{code}
+```
+
+Input data:
+```json
+{json.dumps(data, indent=2)}
+```
+
+Please fix the code to:
+1. Handle the error properly
+2. Return numeric values for l_plus and l_minus
+3. Include proper error checking
+4. Handle edge cases in the input data
+
+Return only the corrected Python code in a ```python code block.
+"""
+            logger.debug(f"Sending debug prompt to LLM:\n{debug_prompt}")
+            fixed = first_code_block(llm.generate(debug_prompt), _PY)
+            if fixed:
+                code = fixed
+            else:
+                logger.error("No Python code block found in debug response")
+
+    raise RuntimeError("Unexpected error in debug loop")  # pragma: no cover
