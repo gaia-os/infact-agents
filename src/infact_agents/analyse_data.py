@@ -6,7 +6,6 @@ sandboxed. Only use with models/inputs you trust, or run inside a container.
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 
@@ -14,6 +13,7 @@ import numpy as np
 import scipy
 
 from .llm import LLMClient
+from .prompts import analysis_prompt, debug_prompt
 from .settings import Settings
 from .utils import first_code_block
 
@@ -29,32 +29,7 @@ def analyse_data(
 ) -> tuple[float, float, str]:
     """Generate and execute analysis code. Returns ``(l_plus, l_minus, code)``."""
     logger.info("Analyzing parsed data")
-    cap = settings.max_log_likelihood_ratio
-
-    prompt = f"""
-Given this data:
-{json.dumps(data, indent=2)}
-
-Generate Python code to calculate log likelihoods for the hypothesis:
-"{hypothesis}"
-
-This should be a single function named `calculate_log_likelihoods`.
-It should take a single argument, a dict with the format given above,
-and output only the tuple of log-likelihoods
-  l_plus = log P(data | hypothesis),
-  l_minus = log P(data | not hypothesis).
-
-The code should:
-1. Calculate l_plus and l_minus (log likelihoods)
-2. Handle uncertainties properly
-3. Account for data quality and potential biases
-4. Limit overconfidence by capping the absolute difference between l_plus and l_minus to {cap}.
-5. Use the usual libraries such as numpy and scipy for calculations
-6. Use print() to output intermediate results, as well as the final result before returning.
-
-Return only executable Python code in a ```python code block with the function definition.
-Do not include the function call itself.
-"""
+    prompt = analysis_prompt(data, hypothesis, settings.max_log_likelihood_ratio)
     logger.debug(f"Analysis prompt: {prompt}")
     response = llm.generate(prompt)
     logger.debug(f"LLM response: {response}")
@@ -113,29 +88,9 @@ def execute_code_with_debug(
                     f"Final error: {e}"
                 ) from e
 
-            debug_prompt = f"""
-The following code failed with error: {e}
-
-Code:
-```python
-{code}
-```
-
-Input data:
-```json
-{json.dumps(data, indent=2)}
-```
-
-Please fix the code to:
-1. Handle the error properly
-2. Return numeric values for l_plus and l_minus
-3. Include proper error checking
-4. Handle edge cases in the input data
-
-Return only the corrected Python code in a ```python code block.
-"""
-            logger.debug(f"Sending debug prompt to LLM:\n{debug_prompt}")
-            fixed = first_code_block(llm.generate(debug_prompt), _PY)
+            fix_prompt = debug_prompt(code, data, e)
+            logger.debug(f"Sending debug prompt to LLM:\n{fix_prompt}")
+            fixed = first_code_block(llm.generate(fix_prompt), _PY)
             if fixed:
                 code = fixed
             else:

@@ -12,6 +12,7 @@ from typing import Any
 import pandas as pd
 
 from ..llm import Attachment, LLMClient
+from ..prompts import parse_prompt, redundancy_prompt
 from ..settings import Settings
 from ..utils import extract_code_blocks
 
@@ -22,37 +23,6 @@ IMAGE_TYPES = {
     ".gif": "image/gif",
     ".webp": "image/webp",
 }
-
-_PARSE_PROMPT = """
-Extract relevant data points for evaluating the hypothesis:
-"{hypothesis}"
-
-Provide your response as a JSON code block, like this:
-```json
-{{
-    "numerical_values": [],
-    "metadata": {{}},
-    "issues": [],
-    "confidence_assessment": {{
-        "confidence_score": 0.75,
-        "explanation": "Detailed explanation of confidence level",
-        "key_strengths": ["Strength 1", "Strength 2"],
-        "key_limitations": ["Limitation 1", "Limitation 2"]
-    }}
-}}
-```
-
-The confidence_assessment should:
-1. Include a confidence_score between 0 and 1
-2. Provide a detailed explanation of the confidence level
-3. List key strengths of the evidence
-4. List key limitations or potential issues
-
-The overall JSON should include:
-1. Extracted numerical values and their uncertainties
-2. Relevant metadata (source quality, methodology, etc.)
-3. Any potential issues or biases in the data
-"""
 
 
 def _truncate(text: str, limit: int, logger: logging.Logger) -> str:
@@ -127,9 +97,7 @@ def parse_data(
     logger.info(f"Parsing data file: {data_file}")
     text, attachments = _load_input(Path(data_file), llm, settings, logger)
 
-    prompt = _PARSE_PROMPT.format(hypothesis=hypothesis)
-    if text:
-        prompt = f"Document content:\n{text}\n\n{prompt}"
+    prompt = parse_prompt(hypothesis, text)
 
     logger.info("Sending parse request to LLM")
     response_text = llm.generate(prompt, attachments=attachments)
@@ -242,22 +210,7 @@ def is_redundant(
     if not existing:
         return False
 
-    prompt = f"""
-Compare the following new data:
-{json.dumps(new_data, indent=2)}
-
-With these existing data points:
-{json.dumps(existing, indent=2)}
-
-Is the new data redundant with any existing data points?
-Consider:
-1. Same source or study being cited
-2. Same measurements within uncertainty
-3. Derived results from already incorporated primary data
-
-Return only "true" if redundant, "false" if novel information.
-"""
-    response = llm.generate(prompt, max_tokens=4096).strip().lower()
+    response = llm.generate(redundancy_prompt(new_data, existing), max_tokens=4096).strip().lower()
     logger.debug(f"Redundancy check response: {response}")
     result = response.strip("\"'`. \n").startswith("true")
     logger.info(f"Redundancy check result: {result}")
