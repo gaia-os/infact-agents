@@ -8,16 +8,18 @@ from __future__ import annotations
 
 import dataclasses
 import hmac
+import json
 import tempfile
 import threading
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, FastAPI, File, Header, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, status
 
 from ..node import InFactNode
 from ..settings import Settings
 from .schemas import (
+    AnalyzeResponse,
     CreateNodeRequest,
     DataPointOut,
     NodeDetail,
@@ -127,8 +129,91 @@ def create_router(settings: Settings | None = None) -> APIRouter:
                         status.HTTP_502_BAD_GATEWAY, f"Processing failed: {type(e).__name__}"
                     )
                 redundant = len(entry.node.data_points) == before
+                raw_data = None if redundant else entry.node.data_points[-1]["raw_data"]
 
-        return {**_summary(node_id, entry.node), "redundant": redundant}
+        return {
+            **_summary(node_id, entry.node),
+            "redundant": redundant,
+            "raw_data": raw_data,
+        }
+
+    @router.post("/analyze", response_model=AnalyzeResponse)
+    def analyze(
+        hypothesis: str = Form(...),
+        file: UploadFile = File(...),
+        prior_log_odds: float = Form(0.0),
+        current_posterior: float | None = Form(default=None),
+        existing_data_points: str | None = Form(default=None),
+        llm_provider: str | None = Form(default=None),
+        llm_model: str | None = Form(default=None),
+    ):
+        overrides = {
+            k: v
+            for k, v in (("llm_provider", llm_provider), ("llm_model", llm_model))
+            if v
+        }
+
+        try:
+            node_settings = dataclasses.replace(settings, **overrides)
+            node = InFactNode(hypothesis, prior_log_odds=prior_log_odds, settings=node_settings)
+        except (ValueError, ImportError) as e:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+
+        node.current_posterior = prior_log_odds if current_posterior is None else current_posterior
+
+        if existing_data_points:
+            try:
+                parsed_points = json.loads(existing_data_points)
+                if not isinstance(parsed_points, list):
+                    raise ValueError("existing_data_points must be a JSON array")
+                node.data_points = parsed_points
+            except (json.JSONDecodeError, ValueError) as e:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+
+        content = file.file.read(settings.max_upload_bytes + 1)
+        if len(content) > settings.max_upload_bytes:
+            raise HTTPException(413, "File too large")
+
+        filename = Path(file.filename or "upload").name or "upload"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / filename
+            path.write_bytes(content)
+            before = len(node.data_points)
+            try:
+                node.process_data(str(path))
+            except Exception as e:
+                node.logger.exception("stateless analyze failed")
+                raise HTTPException(
+                    status.HTTP_502_BAD_GATEWAY, f"Processing failed: {type(e).__name__}"
+                )
+            redundant = len(node.data_points) == before
+
+        if redundant:
+            return {
+                "hypothesis": hypothesis,
+                "prior_log_odds": prior_log_odds,
+                "current_posterior": node.current_posterior,
+                "probability": node.probability,
+                "interval": node._calculate_uncertainty(),
+                "redundant": True,
+            }
+
+        data_point = node.data_points[-1]
+        return {
+            "hypothesis": hypothesis,
+            "prior_log_odds": prior_log_odds,
+            "current_posterior": node.current_posterior,
+            "probability": node.probability,
+            "interval": node._calculate_uncertainty(),
+            "redundant": False,
+            "raw_data": data_point["raw_data"],
+            "metadata": data_point["metadata"],
+            "l_plus": data_point["l_plus"],
+            "l_minus": data_point["l_minus"],
+            "posterior": data_point["posterior"],
+            "confidence_assessment": data_point["confidence_assessment"],
+            "analysis_rationale": data_point["analysis_rationale"],
+        }
 
     return router
 

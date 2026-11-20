@@ -41,3 +41,20 @@ class NodeDetail(NodeSummary):
 
 class ProcessResponse(NodeSummary):
     redundant: bool
+    raw_data: dict[str, Any] | None = None
+
+
+class AnalyzeResponse(BaseModel):
+    hypothesis: str
+    prior_log_odds: float
+    current_posterior: float
+    probability: float
+    interval: tuple[float, float]
+    redundant: bool
+    raw_data: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
+    l_plus: float | None = None
+    l_minus: float | None = None
+    posterior: float | None = None
+    confidence_assessment: dict[str, Any] | None = None
+    analysis_rationale: str | None = None

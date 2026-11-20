@@ -61,6 +61,10 @@ def test_single_pdf(client, fake_llm, pdfs):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["redundant"] is False
+    assert body["raw_data"] == {
+        "numerical_values": [1.1],
+        "confidence_assessment": {"confidence_score": 0.9},
+    }
     assert body["num_data_points"] == 1
     # l_plus - l_minus = 2 from the fake LLM, prior 0
     assert body["current_posterior"] == pytest.approx(2.0)
@@ -103,6 +107,7 @@ def test_redundant_pdf_is_skipped(client, fake_llm, pdfs):
     r = _upload(client, node_id, "nasa_copy.pdf", pdfs["nasa_report.pdf"])
     body = r.json()
     assert body["redundant"] is True
+    assert body["raw_data"] is None
     assert body["num_data_points"] == 1
     assert body["current_posterior"] == pytest.approx(2.0)
 
@@ -143,3 +148,23 @@ def test_api_key_required(fake_llm, settings, pdfs):
     assert c.get("/nodes", headers={"X-API-Key": "wrong"}).status_code == 401
     assert c.get("/nodes", headers={"X-API-Key": "secret"}).status_code == 200
     assert c.get("/health").status_code == 200  # health stays open
+
+
+def test_stateless_analyze(client, fake_llm, pdfs):
+    r = client.post(
+        "/analyze",
+        data={"hypothesis": HYPOTHESIS, "prior_log_odds": "0"},
+        files={"file": ("nasa_report.pdf", pdfs["nasa_report.pdf"], "application/pdf")},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["hypothesis"] == HYPOTHESIS
+    assert body["prior_log_odds"] == 0
+    assert body["current_posterior"] == pytest.approx(2.0)
+    assert body["probability"] > 0.5
+    assert body["redundant"] is False
+    assert body["raw_data"]["numerical_values"] == [1.1]
+    assert body["l_plus"] == -1.0
+    assert body["l_minus"] == -3.0
+    assert body["metadata"]["filename"] == "nasa_report.pdf"
+    assert client.get("/nodes").json() == []
