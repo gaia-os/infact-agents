@@ -28,9 +28,10 @@ def analyse_data(
     logger: logging.Logger,
 ) -> tuple[float, float, str]:
     """Generate and execute analysis code. Returns ``(l_plus, l_minus, code)``."""
-    logger.info("Analyzing parsed data")
+    logger.info("Analysis stage: generating Python likelihood function from parsed evidence")
     prompt = analysis_prompt(data, hypothesis, settings.max_log_likelihood_ratio)
     logger.debug(f"Analysis prompt: {prompt}")
+    logger.info("Analysis stage: requesting initial analysis code from LLM")
     response = llm.generate(prompt)
     logger.debug(f"LLM response: {response}")
 
@@ -61,6 +62,7 @@ def execute_code_with_debug(
 ) -> tuple[float, float, str]:
     """Run ``calculate_log_likelihoods``; on failure ask the LLM to fix it."""
     max_attempts = settings.max_debug_attempts
+    logger.info("Analysis stage: executing generated code with auto-debug fallback")
 
     for attempt in range(1, max_attempts + 1):
         logger.info(f"Code execution attempt {attempt}/{max_attempts}")
@@ -89,10 +91,12 @@ def execute_code_with_debug(
                 ) from e
 
             fix_prompt = debug_prompt(code, data, e)
+            logger.info("Requesting corrected code from LLM after execution failure")
             logger.debug(f"Sending debug prompt to LLM:\n{fix_prompt}")
             fixed = first_code_block(llm.generate(fix_prompt), _PY)
             if fixed:
                 code = fixed
+                logger.info("Received corrected Python code, retrying execution")
             else:
                 logger.error("No Python code block found in debug response")
 

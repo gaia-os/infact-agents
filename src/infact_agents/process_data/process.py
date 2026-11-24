@@ -44,23 +44,30 @@ def _load_input(
 ) -> tuple[str, list[Attachment]]:
     """Return (text, attachments) appropriate for the given LLM's capabilities."""
     suffix = path.suffix.lower()
+    logger.info(f"Loading input file {path.name} (type: {suffix or 'unknown'})")
 
     if suffix == ".csv":
+        logger.info("Input mode: structured CSV text extraction")
         return _truncate(pd.read_csv(path).to_string(), settings.max_input_chars, logger), []
 
     if suffix == ".pdf":
         if llm.supports_pdf:
+            logger.info("Input mode: native PDF attachment (no OCR fallback needed)")
             data = base64.b64encode(path.read_bytes()).decode("utf-8")
             return "", [Attachment("pdf", "application/pdf", data)]
-        logger.info("LLM lacks native PDF support, extracting text with pypdf")
+        logger.info(
+            "Input mode: PDF text extraction with pypdf because LLM lacks native PDF support"
+        )
         return _truncate(_pdf_text(path), settings.max_input_chars, logger), []
 
     if suffix in IMAGE_TYPES:
         if not llm.supports_images:
             raise ValueError(f"The configured LLM does not support image input ({path.name})")
+        logger.info("Input mode: native image attachment (OCR delegated to multimodal model)")
         data = base64.b64encode(path.read_bytes()).decode("utf-8")
         return "", [Attachment("image", IMAGE_TYPES[suffix], data)]
 
+    logger.info("Input mode: plain text file read")
     text = path.read_text(encoding="utf-8", errors="replace")
     return _truncate(text, settings.max_input_chars, logger), []
 
@@ -94,7 +101,7 @@ def parse_data(
     logger: logging.Logger,
 ) -> dict:
     """Parse a data file into structured evidence using the LLM."""
-    logger.info(f"Parsing data file: {data_file}")
+    logger.info(f"Parsing data file into structured evidence: {data_file}")
     text, attachments = _load_input(Path(data_file), llm, settings, logger)
 
     prompt = parse_prompt(hypothesis, text)
@@ -110,6 +117,7 @@ def parse_data(
             "extraction_error": "Failed to parse LLM response",
             "raw_response": response_text,
         }
+    logger.info("Structured parsing complete")
     return parsed
 
 

@@ -11,7 +11,7 @@ import httpx
 HYPOTHESIS = "The Earth's average temperature has risen since 1900"
 PDF_FILES: list[str] = []
 DOCS_DIR = Path(__file__).parent / "docs"
-API_URL = "http://127.0.0.1:8000"
+API_URL = "http://127.0.0.1:8007"
 API_KEY = os.getenv("INFACT_API_KEY")
 PRIOR_LOG_ODDS = 0.0
 LLM_PROVIDER: str | None = None

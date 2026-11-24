@@ -6,6 +6,7 @@ import json
 import logging
 import math
 from datetime import datetime
+from time import perf_counter
 from typing import Any
 
 from .analyse_data import analyse_data
@@ -51,15 +52,21 @@ class InFactNode:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         logger = logging.getLogger(f"infact.node.{timestamp}.{id(self)}")
         logger.setLevel(self.settings.log_level)
+        logger.propagate = False
 
         self.settings.log_dir.mkdir(parents=True, exist_ok=True)
-        handler = logging.FileHandler(
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+        file_handler = logging.FileHandler(
             self.settings.log_dir / f"infact_{timestamp}_{id(self):x}.log", encoding="utf-8"
         )
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-        )
-        logger.addHandler(handler)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+        # Mirror logs to stderr so step progress is visible when running the API in a terminal.
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(formatter)
+        logger.addHandler(stream_handler)
         return logger
 
     # ------------------------------------------------------------ persistence
@@ -114,23 +121,48 @@ class InFactNode:
 
         Returns the new posterior log-odds and a 95% interval on the probability.
         """
-        self.logger.info(f"Processing data file: {data_file}")
+        overall_start = perf_counter()
+        self.logger.info(f"Pipeline started for data file: {data_file}")
         try:
+            parse_start = perf_counter()
+            self.logger.info("Step 1/5: Parse input into structured evidence")
             parsed = parse_data(data_file, self.hypothesis, self.llm, self.settings, self.logger)
+            self.logger.info(
+                f"Step 1/5 complete in {perf_counter() - parse_start:.2f}s"
+            )
 
             existing = [dp["raw_data"] for dp in self.data_points]
+            dedupe_start = perf_counter()
+            self.logger.info("Step 2/5: Check whether parsed evidence is redundant")
             if is_redundant(parsed, existing, self.llm, self.logger):
-                self.logger.info("Data determined to be redundant, skipping")
+                self.logger.info(
+                    f"Step 2/5 complete in {perf_counter() - dedupe_start:.2f}s"
+                )
+                self.logger.info("Data determined to be redundant, skipping downstream analysis")
                 return self.current_posterior, self._calculate_uncertainty()
+            self.logger.info(f"Step 2/5 complete in {perf_counter() - dedupe_start:.2f}s")
 
+            analysis_start = perf_counter()
+            self.logger.info("Step 3/5: Run likelihood analysis")
             l_plus, l_minus, code = analyse_data(
                 parsed, self.hypothesis, self.llm, self.settings, self.logger
             )
+            self.logger.info(
+                f"Step 3/5 complete in {perf_counter() - analysis_start:.2f}s"
+            )
+
+            posterior_start = perf_counter()
+            self.logger.info("Step 4/5: Update posterior belief")
             new_posterior = self.current_posterior + l_plus - l_minus
             self.logger.info(
                 f"Updated posterior from {self.current_posterior} to {new_posterior}"
             )
+            self.logger.info(
+                f"Step 4/5 complete in {perf_counter() - posterior_start:.2f}s"
+            )
 
+            persist_start = perf_counter()
+            self.logger.info("Step 5/5: Extract metadata and persist evidence point")
             self.data_points.append(
                 {
                     "raw_data": parsed,
@@ -146,9 +178,12 @@ class InFactNode:
             )
             self.current_posterior = new_posterior
             lower, upper = self._calculate_uncertainty()
+            self.logger.info(
+                f"Step 5/5 complete in {perf_counter() - persist_start:.2f}s"
+            )
 
             self.logger.info(
-                f"Processing complete. Current probability: "
+                f"Pipeline complete in {perf_counter() - overall_start:.2f}s. Current probability: "
                 f"{self.probability:.2%} ({lower:.2%}, {upper:.2%})"
             )
             return new_posterior, (lower, upper)
